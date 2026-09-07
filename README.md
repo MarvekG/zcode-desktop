@@ -96,7 +96,7 @@ docker run -d --name zcode-desktop \
 
 注意：
 
-- 中转层注入的 Basic 认证直接使用 URL 里的 `user:pass` 原文（不做 URL 百分号解码），凭据请避免 `%` 等需转义字符；
+- 中转注入的 Basic 认证按**字面字节**发送（全程不做百分号解码）：`ZCODE_HTTP_PROXY` 里直接写凭据原文即可，含 `%` 的密码也原样写，**不要**做 URL 转义。仅 `@`、`/`（破坏地址解析）和 `"`、空格（破坏 tinyproxy 配置行）不能出现在凭据中；
 - 上游代理需支持标准 HTTP 代理协议（CONNECT + 绝对地址 GET），squid 等 MITM 代理均满足；对上游不做 TLS（无需也不支持 `https://` 形态的代理）。
 
 ## 环境变量
