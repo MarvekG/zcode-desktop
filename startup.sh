@@ -124,39 +124,38 @@ if [ -n "${ZCODE_HTTP_PROXY:-}" ]; then
         echo "WARNING: TLS to the upstream proxy is not supported; connecting to ${PROXY_HOST}:${PROXY_PORT} with plain HTTP proxy protocol" >&2
     fi
 
-    {
-        echo "Port $RELAY_PORT"
-        echo "Listen $RELAY_ADDR"
-        echo "Allow $RELAY_ADDR"
-        echo "Timeout 600"
-        echo 'LogFile "/var/log/tinyproxy-relay.log"'
-        echo 'PidFile "/run/tinyproxy-relay.pid"'
-        echo "MaxClients 128"
-        # tinyproxy: last matching rule wins, so the catch-all comes first.
-        if [ -n "$PROXY_USERPASS" ]; then
-            echo "upstream http ${PROXY_USERPASS}@${PROXY_HOST}:${PROXY_PORT}"
+    # Standard distro config path. No LogFile/Syslog on purpose: tinyproxy
+    # runs in the foreground (-d) and logs to stderr, which the container
+    # runtime collects (docker logs) - no self-managed log files anywhere.
+    cat > /etc/tinyproxy/tinyproxy.conf <<EOF
+Port $RELAY_PORT
+Listen $RELAY_ADDR
+Allow $RELAY_ADDR
+Timeout 600
+MaxClients 128
+# tinyproxy: last matching rule wins, so the catch-all comes first.
+upstream http ${PROXY_USERPASS:+${PROXY_USERPASS}@}${PROXY_HOST}:${PROXY_PORT}
+upstream none "."
+EOF
+    noproxy_entries | while IFS= read -r entry; do
+        entry="${entry// /}"
+        entry="${entry//\"/}"
+        [ -z "$entry" ] && continue
+        if [[ "$entry" == */* ]]; then
+            # IP with prefix length: pass through (tinyproxy supports CIDR)
+            printf 'upstream none "%s"\n' "$entry"
         else
-            echo "upstream http ${PROXY_HOST}:${PROXY_PORT}"
+            host="${entry%%:*}"     # drop an optional :port
+            host="${host#.}"        # drop a leading dot
+            [ -z "$host" ] && continue
+            printf 'upstream none "%s"\n' "$host"
+            printf 'upstream none ".%s"\n' "$host"
         fi
-        echo 'upstream none "."'
-        noproxy_entries | while IFS= read -r entry; do
-            entry="${entry// /}"
-            entry="${entry//\"/}"
-            [ -z "$entry" ] && continue
-            if [[ "$entry" == */* ]]; then
-                # IP with prefix length: pass through (tinyproxy supports CIDR)
-                printf 'upstream none "%s"\n' "$entry"
-            else
-                host="${entry%%:*}"     # drop an optional :port
-                host="${host#.}"        # drop a leading dot
-                [ -z "$host" ] && continue
-                printf 'upstream none "%s"\n' "$host"
-                printf 'upstream none ".%s"\n' "$host"
-            fi
-        done
-    } > /etc/tinyproxy-zcode.conf
+    done >> /etc/tinyproxy/tinyproxy.conf
 
-    tinyproxy -c /etc/tinyproxy-zcode.conf
+    # Foreground process as a supervised child of this script: if it dies,
+    # the trailing wait -n tears the whole container down.
+    tinyproxy -d -c /etc/tinyproxy/tinyproxy.conf &
 
     # Wait for the relay to accept connections. Deliberately a pure liveness
     # check (TCP connect on the listen port): probing through the relay would
@@ -170,8 +169,7 @@ if [ -n "${ZCODE_HTTP_PROXY:-}" ]; then
         sleep 0.25
     done
     if [ -z "$RELAY_OK" ]; then
-        echo "ERROR: local proxy relay failed to start; tinyproxy log:" >&2
-        tail -20 /var/log/tinyproxy-relay.log >&2 || true
+        echo "ERROR: local proxy relay failed to start; see tinyproxy stderr in the container log (docker logs)" >&2
         exit 1
     fi
     echo "Proxy relay up: $RELAY_URL -> ${PROXY_SCHEME}://${PROXY_HOST}:${PROXY_PORT}${PROXY_USERPASS:+ (auth injected here)}"
