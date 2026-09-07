@@ -32,9 +32,8 @@ RUN --mount=type=bind,source=certs,target=/build-certs \
         echo "Build-time MITM CA installed from certs/mitm-ca.pem"; \
     fi; rm -rf /var/lib/apt/lists/*
 
-# All apt dependencies in one front layer (no cache-friendliness splitting):
+# Main apt dependencies in one front layer:
 # - desktop: XFCE, VNC (TigerVNC), noVNC, fonts, CJK locale
-# - browser: Firefox deb from Mozilla official repo (snap does not work in containers)
 # - input:   fcitx5 pinyin
 # - network: ping/traceroute/mtr/dig/telnet/nc/net-tools/iproute2/lsof/rsync
 # - proxy:   tinyproxy = local unauthenticated relay injecting upstream Basic
@@ -53,12 +52,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 \
         fcitx5-frontend-qt5 fcitx5-config-qt im-config \
         libnss3-tools \
-    && install -d -m 0755 /etc/apt/keyrings \
+    && sed -i 's/^# zh_CN.UTF-8/zh_CN.UTF-8/' /etc/locale.gen && locale-gen \
+    && rm -rf /var/lib/apt/lists/*
+
+# Firefox in its own layer (deb from Mozilla official repo; snap does not work
+# in containers) so a Mozilla-side failure does not invalidate the package
+# layer above, plus enterprise autoconfig: proxy is injected into mozilla.cfg
+# at container start (Firefox ignores HTTPS_PROXY/http_proxy env vars).
+RUN install -d -m 0755 /etc/apt/keyrings \
     && wget -q https://packages.mozilla.org/apt/repo-signing-key.gpg -O /etc/apt/keyrings/packages.mozilla.org.asc \
     && echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" > /etc/apt/sources.list.d/mozilla.list \
     && printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla \
     && apt-get update && apt-get install -y --no-install-recommends firefox firefox-l10n-zh-cn \
-    && sed -i 's/^# zh_CN.UTF-8/zh_CN.UTF-8/' /etc/locale.gen && locale-gen \
+    && mkdir -p /etc/firefox/policies \
+    && printf '%s' '{"policies":{"Preferences":{"security.enterprise_roots.enabled":{"Value":true,"Status":"locked"}}}}' \
+        > /etc/firefox/policies/policies.json \
+    && printf '%s\n' \
+        'pref("general.config.filename", "mozilla.cfg");' \
+        'pref("general.config.obscure_value", 0);' \
+        > /usr/lib/firefox/defaults/pref/autoconfig.js \
+    && printf '%s\n' \
+        '// Firefox enterprise config (rewritten by /root/startup.sh at boot)' \
+        'defaultPref("security.enterprise_roots.enabled", true);' \
+        'defaultPref("network.proxy.type", 0);' \
+        > /usr/lib/firefox/mozilla.cfg \
     && rm -rf /var/lib/apt/lists/*
 
 # ZCode desktop app (AppImage kept as-is; runs via FUSE mount, no unpacked install)
@@ -93,21 +110,7 @@ RUN chmod 755 /opt/ZCode.AppImage /usr/local/bin/zcode \
         '' \
         '[GroupOrder]' \
         '0=Default' \
-        > /root/.config/fcitx5/profile \
-    && mkdir -p /etc/firefox/policies \
-    && printf '%s' '{"policies":{"Preferences":{"security.enterprise_roots.enabled":{"Value":true,"Status":"locked"}}}}' \
-        > /etc/firefox/policies/policies.json \
-    # Firefox enterprise autoconfig: proxy is injected into mozilla.cfg at
-    # container start (Firefox ignores HTTPS_PROXY/http_proxy env vars).
-    && printf '%s\n' \
-        'pref("general.config.filename", "mozilla.cfg");' \
-        'pref("general.config.obscure_value", 0);' \
-        > /usr/lib/firefox/defaults/pref/autoconfig.js \
-    && printf '%s\n' \
-        '// Firefox enterprise config (rewritten by /root/startup.sh at boot)' \
-        'defaultPref("security.enterprise_roots.enabled", true);' \
-        'defaultPref("network.proxy.type", 0);' \
-        > /usr/lib/firefox/mozilla.cfg
+        > /root/.config/fcitx5/profile
 
 # Everything runs as root
 WORKDIR /root
