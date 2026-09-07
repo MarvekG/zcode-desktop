@@ -158,11 +158,12 @@ if [ -n "${ZCODE_HTTP_PROXY:-}" ]; then
 
     tinyproxy -c /etc/tinyproxy-zcode.conf
 
-    # Wait for the relay to answer; fail loudly if it did not come up.
+    # Wait for the relay to accept connections. Deliberately a pure liveness
+    # check (TCP connect on the listen port): probing through the relay would
+    # depend on upstream behavior, and a slow upstream must not fail startup.
     RELAY_OK=""
     for _ in $(seq 1 40); do
-        # Any HTTP response (even an upstream error page) proves the relay is up.
-        if curl -sx "$RELAY_URL" --max-time 2 -o /dev/null "http://relay-probe.invalid/" 2>/dev/null; then
+        if timeout 1 bash -c "exec 3<>/dev/tcp/${RELAY_ADDR}/${RELAY_PORT}" 2>/dev/null; then
             RELAY_OK=1
             break
         fi
