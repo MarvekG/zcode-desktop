@@ -20,7 +20,7 @@ ARG TARGETARCH
 # the runtime startup picks it up (runtime -v mount of /mitm-ca.pem overrides).
 RUN --mount=type=bind,source=certs,target=/build-certs \
     apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && if [ -f /build-certs/mitm-ca.pem ]; then \
         n=$(grep -c -- "-----BEGIN CERTIFICATE-----" /build-certs/mitm-ca.pem || true); \
         [ "${n:-0}" -le 1 ] || { echo "ERROR: certs/mitm-ca.pem contains $n certificates; exactly one is required" >&2; exit 1; }; \
@@ -35,10 +35,20 @@ RUN --mount=type=bind,source=certs,target=/build-certs \
 # - desktop: XFCE, VNC (TigerVNC), noVNC, fonts, CJK locale
 # - input:   fcitx5 pinyin
 # - network: ping/traceroute/mtr/dig/telnet/nc/net-tools/iproute2/lsof/rsync
-# - proxy:   tinyproxy = local unauthenticated relay injecting upstream Basic
-#            auth; jq for patching ZCode setting.json at startup
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        locales ca-certificates curl wget git openssh-client gpg sudo jq rsync \
+# - proxy:   tinyproxy and 3proxy = selectable local unauthenticated relays;
+#            Python for configuration; jq for reading startup metadata
+RUN install -d -m 0755 /usr/share/keyrings \
+    && curl -fsSL https://3proxy.org/repo/3proxy-release-key.asc \
+        -o /usr/share/keyrings/3proxy.asc \
+    && printf '%s\n' \
+        'Types: deb' \
+        'URIs: https://3proxy.org/repo/deb' \
+        'Suites: lts' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/3proxy.asc' \
+        > /etc/apt/sources.list.d/3proxy.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        locales ca-certificates curl wget git openssh-client gpg sudo jq python3 rsync \
         less vim unzip zip file tree ripgrep procps psmisc \
         htop tmux ncdu fzf bat bash-completion \
         xdg-utils dbus-x11 x11-xserver-utils xauth \
@@ -49,7 +59,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
         libatspi2.0-0 libsecret-1-0 libgbm1 libasound2t64 libfuse2 \
         iputils-ping net-tools iproute2 traceroute mtr-tiny dnsutils telnet \
-        netcat-openbsd lsof tinyproxy \
+        netcat-openbsd lsof tinyproxy 3proxy \
         fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 \
         fcitx5-frontend-qt5 fcitx5-config-qt im-config \
         libnss3-tools \
@@ -129,7 +139,7 @@ ENV HOME=/root \
     NODE_USE_ENV_PROXY=1 \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
-COPY startup.sh /root/startup.sh
+COPY startup.sh proxy_config.py /root/
 RUN chmod +x /root/startup.sh
 
 EXPOSE 5901 6080

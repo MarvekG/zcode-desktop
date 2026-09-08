@@ -62,9 +62,13 @@ docker run -d --name zcode-desktop \
 
 ## 代理与 MITM 证书信任
 
-只需要设置 **`ZCODE_HTTP_PROXY`** 一个变量（可选 `ZCODE_HTTP_PROXY_NO_PROXY`），支持 `http://`、`https://`、`socks4://` 和 `socks5://[user:pass@]host:port` 四种上游。`https://` 仍表示明文连接到 HTTP 代理协议的上游；SOCKS 上游由 tinyproxy 转换为容器内应用使用的 HTTP 代理。容器启动时自动完成：
+只需要设置 **`ZCODE_HTTP_PROXY`** 一个变量（可选 `ZCODE_HTTP_PROXY_NO_PROXY` 和 `ZCODE_PROXY_BACKEND`），上游只支持 `http://` 和 `socks5://[user:password@]host:port`。`ZCODE_PROXY_BACKEND` 可选 `tinyproxy` 或 `3proxy`，默认是 `tinyproxy`。用户名和密码中的特殊字符必须先做 URL 百分号编码，容器启动时会解码后交给中转程序。例如 `user%40name:pass%3Aword` 会还原为 `user@name:pass:word`。
 
-1. **本地免认证中转**：启动 tinyproxy 监听 `127.0.0.1:8118`，统一转发到上游代理，并按 HTTP/SOCKS 协议处理上游认证——容器内任何应用都不感知用户名密码；
+这里导出的 `https_proxy` 仍然是应用访问 HTTPS 目标时使用的本地 HTTP 中转地址，不表示支持 `https://` 形式的上游代理。
+
+代理 URL 解析、凭据解码、NO_PROXY 规则以及 tinyproxy/3proxy、Firefox、ZCode 配置均由 `proxy_config.py` 生成；`startup.sh` 负责启动和监督进程、导出环境变量。Python 仅使用标准库。
+
+1. **本地免认证中转**：启动选定的 tinyproxy 或 3proxy，监听 `127.0.0.1:8118`，统一转发到上游代理并处理上游认证——容器内任何应用都不感知用户名密码；
 2. **shell 环境**：导出 `http_proxy`/`https_proxy`/`no_proxy`（含大写）指向中转，curl/git/wget/apt 开箱即用；
 3. **ZCode**：把中转地址写入 `setting.json`（`httpProxy`/`httpProxyNoProxy`）；
 4. **Firefox**：Firefox 不读代理环境变量，通过企业策略 mozilla.cfg 写入中转地址。
@@ -76,8 +80,8 @@ docker run -d --name zcode-desktop \
 | 代理 | `/mitm-ca.pem` | 行为 |
 |---|---|---|
 | 不设置 | 不挂载 | 全容器直连，使用系统默认 CA；适合无代理网络 |
-| 设置 `ZCODE_HTTP_PROXY` | 不挂载 | 经 HTTP/SOCKS 上游转发，使用系统默认 CA；适合普通隧道代理或不拦截 TLS 的代理 |
-| 设置 `ZCODE_HTTP_PROXY` | 挂载 | 经上游代理转发，并信任指定 MITM 根 CA；适合会解密并重新签发 HTTPS 证书的企业代理 |
+| 设置 `ZCODE_HTTP_PROXY` | 不挂载 | 经 HTTP/SOCKS5 上游转发，使用系统默认 CA；适合普通隧道代理或不拦截 TLS 的代理 |
+| 设置 `ZCODE_HTTP_PROXY` | 挂载 | 经 HTTP/SOCKS5 上游转发，并信任指定 MITM 根 CA；适合会解密并重新签发 HTTPS 证书的企业代理 |
 
 也允许“无代理 + 挂载 CA”，用于直连但仍需信任企业内部证书的环境。
 
@@ -120,7 +124,8 @@ docker run -d --name zcode-desktop \
   --shm-size 2g \
   -p 6080:6080 -p 5901:5901 \
   -v /path/to/mitm-ca.pem:/mitm-ca.pem:ro \
-  -e ZCODE_HTTP_PROXY=http://user:pass@proxy.example.com:55666 \
+  -e ZCODE_PROXY_BACKEND=3proxy \
+  -e ZCODE_HTTP_PROXY=http://user%40name:pass%3Aword@proxy.example.com:55666 \
   -e ZCODE_HTTP_PROXY_NO_PROXY=localhost,127.0.0.1,.internal.example.com,10.0.0.0/8 \
   zcode-desktop:amd64
 ```
@@ -129,15 +134,16 @@ docker run -d --name zcode-desktop \
 
 | 变量 | 作用 |
 |---|---|
-| `ZCODE_HTTP_PROXY` | 唯一的代理配置入口，格式 `http(s)://[user:pass@]host:port` 或 `socks4://[user:pass@]host:port` / `socks5://[user:pass@]host:port`；`https://` 对上游仍走明文 HTTP 代理协议，不做 TLS；端口缺省按 HTTP 80、HTTPS 443、SOCKS 1080；未设置或为空 = 全容器无代理直连 |
+| `ZCODE_HTTP_PROXY` | 唯一的代理配置入口，格式 `http://[user:password@]host:port` 或 `socks5://[user:password@]host:port`；仅支持 HTTP 和 SOCKS5；端口缺省按 HTTP 80、SOCKS5 1080；用户名和密码中的特殊字符必须 URL 编码，未设置或为空 = 全容器无代理直连 |
+| `ZCODE_PROXY_BACKEND` | 本地中转实现，可选 `tinyproxy` 或 `3proxy`，默认 `tinyproxy` |
 | `ZCODE_HTTP_PROXY_NO_PROXY` | 不走代理的目标列表（域名、IP、CIDR），逗号分隔；写入中转例外规则、`no_proxy` 环境变量、Firefox 与 ZCode；`localhost,127.0.0.1,::1` 始终自动包含 |
 | `/mitm-ca.pem`（固定路径，非环境变量） | MITM 根证书：运行期 `-v` 挂载，或构建时烘焙（`certs/mitm-ca.pem`）；必须恰好一个证书，否则启动失败；不需要 MITM 时不提供 |
 
 注意：
 
-- 中转注入的 Basic 认证按**字面字节**发送（全程不做百分号解码）：`ZCODE_HTTP_PROXY` 里直接写凭据原文即可，含 `%` 的密码也原样写，**不要**做 URL 转义。仅 `@`、`/`（破坏地址解析）和 `"`、空格（破坏 tinyproxy 配置行）不能出现在凭据中；
-- HTTP 上游需支持标准 HTTP 代理协议（CONNECT + 绝对地址 GET）；SOCKS 上游支持 SOCKS4/SOCKS5。对 `https://` 形态的 HTTP 上游不做 TLS。
-- SOCKS5 用户名密码认证取决于镜像中的 tinyproxy 版本；如果认证握手失败，先使用无认证 SOCKS5 或升级 tinyproxy。
+- 用户名和密码按 URL userinfo 规则输入：例如 `p@ss:word` 应写成 `p%40ss%3Aword`；容器只对这两个字段做一次百分号解码，主机名和端口不解码。
+- 上游 HTTP 需支持标准 HTTP 代理协议（CONNECT + 绝对地址 GET）；上游 SOCKS 只支持 SOCKS5。
+- Tinyproxy 的配置语法无法表达解码后用户名包含 `:` 或密码包含 `@`、空白、双引号的凭据；这类凭据请将 `ZCODE_PROXY_BACKEND` 设置为 `3proxy`。3proxy 会把用户名和密码作为独立配置项处理。
 
 ## 环境变量
 
