@@ -38,7 +38,9 @@ RUN --mount=type=bind,source=certs,target=/build-certs \
 # - proxy:   tinyproxy = local unauthenticated relay injecting upstream Basic
 #            auth; jq for patching ZCode setting.json at startup
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        locales ca-certificates curl wget git gpg sudo jq rsync \
+        locales ca-certificates curl wget git openssh-client gpg sudo jq rsync \
+        less vim-tiny unzip zip file tree ripgrep procps psmisc \
+        htop tmux ncdu fzf bat bash-completion \
         xdg-utils dbus-x11 x11-xserver-utils xauth \
         tigervnc-standalone-server tigervnc-common tigervnc-tools fuse3 \
         novnc websockify \
