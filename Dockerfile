@@ -8,6 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=zh_CN.UTF-8
 
 ARG ZCODE_VERSION=3.11.2
+ARG THREEPROXY_VERSION=1.0.0
 ARG TARGETARCH
 
 # Bootstrap trust BEFORE the main install: the bare base has neither
@@ -31,23 +32,15 @@ RUN --mount=type=bind,source=certs,target=/build-certs \
         echo "Build-time MITM CA installed from certs/mitm-ca.pem"; \
     fi; rm -rf /var/lib/apt/lists/*
 
-# Main apt dependencies in one front layer:
+# Main apt dependencies in one front layer. 3proxy is installed in a later
+# layer from its GitHub release so changing its version does not invalidate
+# this expensive desktop dependency layer.
 # - desktop: XFCE, VNC (TigerVNC), noVNC, fonts, CJK locale
 # - input:   fcitx5 pinyin
 # - network: ping/traceroute/mtr/dig/telnet/nc/net-tools/iproute2/lsof/rsync
-# - proxy:   tinyproxy and 3proxy = selectable local unauthenticated relays;
+# - proxy:   tinyproxy = local unauthenticated relay; 3proxy is installed below
 #            Python for configuration; jq for reading startup metadata
-RUN install -d -m 0755 /usr/share/keyrings \
-    && curl -fsSL https://3proxy.org/repo/3proxy-release-key.asc \
-        -o /usr/share/keyrings/3proxy.asc \
-    && printf '%s\n' \
-        'Types: deb' \
-        'URIs: https://3proxy.org/repo/deb' \
-        'Suites: lts' \
-        'Components: main' \
-        'Signed-By: /usr/share/keyrings/3proxy.asc' \
-        > /etc/apt/sources.list.d/3proxy.sources \
-    && apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
         locales ca-certificates curl wget git openssh-client gpg sudo jq python3 rsync \
         less vim unzip zip file tree ripgrep procps psmisc \
         htop tmux ncdu fzf bat bash-completion \
@@ -58,8 +51,9 @@ RUN install -d -m 0755 /usr/share/keyrings \
         fonts-noto-cjk fonts-noto-color-emoji \
         libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
         libatspi2.0-0 libsecret-1-0 libgbm1 libasound2t64 libfuse2 \
+        libpcre2-8-0 libssl3 \
         iputils-ping net-tools iproute2 traceroute mtr-tiny dnsutils telnet \
-        netcat-openbsd lsof tinyproxy 3proxy \
+        netcat-openbsd lsof tinyproxy \
         fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 \
         fcitx5-frontend-qt5 fcitx5-config-qt im-config \
         libnss3-tools \
@@ -131,6 +125,28 @@ RUN chmod 755 /opt/ZCode.AppImage /usr/local/bin/zcode \
         '[GroupOrder]' \
         '0=Default' \
         > /root/.config/fcitx5/profile
+
+# Install 3proxy from the official GitHub Release instead of an apt repository.
+# The release publishes Debian packages for both supported target architectures.
+# Verify the package against the release checksum before installing it with dpkg.
+RUN case "$TARGETARCH" in \
+      amd64) THREEPROXY_ASSET_ARCH=x86_64 ;; \
+      arm64) THREEPROXY_ASSET_ARCH=arm64 ;; \
+      *) echo "unsupported target architecture for 3proxy: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && THREEPROXY_DEB="3proxy-${THREEPROXY_VERSION}.${THREEPROXY_ASSET_ARCH}.deb" \
+    && THREEPROXY_BASE="https://github.com/3proxy/3proxy/releases/download/${THREEPROXY_VERSION}" \
+    && curl -fsSL --retry 3 "$THREEPROXY_BASE/$THREEPROXY_DEB" -o "/tmp/$THREEPROXY_DEB" \
+    && curl -fsSL --retry 3 "$THREEPROXY_BASE/SHA256SUMS-${THREEPROXY_ASSET_ARCH}" -o /tmp/3proxy.SHA256SUMS \
+    && THREEPROXY_SHA256=$(awk -v file="$THREEPROXY_DEB" '$2 == file { print $1; exit }' /tmp/3proxy.SHA256SUMS) \
+    && [ -n "$THREEPROXY_SHA256" ] \
+    && echo "$THREEPROXY_SHA256  /tmp/$THREEPROXY_DEB" | sha256sum -c - \
+    && printf '%s\n' '#!/bin/sh' 'exit 101' > /usr/sbin/policy-rc.d \
+    && chmod 755 /usr/sbin/policy-rc.d \
+    && dpkg -i "/tmp/$THREEPROXY_DEB" \
+    && command -v 3proxy \
+    && rm -f /usr/sbin/policy-rc.d \
+    && rm -f "/tmp/$THREEPROXY_DEB" /tmp/3proxy.SHA256SUMS
 
 # Everything runs as root
 WORKDIR /root

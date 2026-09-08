@@ -25,6 +25,9 @@ docker buildx build --platform linux/amd64 \
   -t zcode-desktop:amd64 --load .
 
 # arm64 同样使用 --platform linux/arm64；BuildKit 会按目标架构下载对应 AppImage
+# 3proxy 默认从 GitHub Release 下载 1.0.0，可按需固定其他已发布版本：
+# docker buildx build --platform linux/amd64 \
+#   --build-arg THREEPROXY_VERSION=1.0.0 -t zcode-desktop:amd64 --load .
 ```
 
 ## 运行
