@@ -33,6 +33,10 @@ install_ca() { # $1 = source cert file (exactly one cert, PEM or DER); sets CA_P
     # Normalize: DER and other binary encodings get converted to PEM, because
     # update-ca-certificates / Node / ZCode all require PEM.
     if [ "$n" -eq 1 ]; then
+        if ! openssl x509 -in "$src" -noout >/dev/null 2>&1; then
+            echo "ERROR: cannot parse PEM certificate $src" >&2
+            return 1
+        fi
         cp "$src" /usr/local/share/ca-certificates/mitm-ca.crt
     elif openssl x509 -inform DER -in "$src" -out /usr/local/share/ca-certificates/mitm-ca.crt 2>/dev/null; then
         echo "Converted DER cert to PEM: $src"
@@ -40,16 +44,23 @@ install_ca() { # $1 = source cert file (exactly one cert, PEM or DER); sets CA_P
         echo "ERROR: cannot parse certificate $src (neither PEM nor DER)" >&2
         return 1
     fi
-    update-ca-certificates >/tmp/ca-install.log 2>&1 || true
+    if ! update-ca-certificates >/tmp/ca-install.log 2>&1; then
+        echo "ERROR: failed to install certificate into the system trust store" >&2
+        cat /tmp/ca-install.log >&2 || true
+        return 1
+    fi
     # NSS database: what Firefox enterprise roots actually reads on Linux;
     # /etc/ssl/certs alone is NOT enough for Firefox. Recreate from scratch so
     # reruns stay idempotent (certutil -N loops forever prompting on an
     # existing db when stdin is not a terminal).
     mkdir -p /etc/pki/nssdb
     rm -f /etc/pki/nssdb/*.db /etc/pki/nssdb/pkcs11.txt
-    certutil -d sql:/etc/pki/nssdb -N --empty-password </dev/null >/dev/null 2>&1 || true
+    if ! certutil -d sql:/etc/pki/nssdb -N --empty-password </dev/null >/dev/null 2>&1; then
+        echo "ERROR: failed to initialize the Firefox NSS database" >&2
+        return 1
+    fi
     certutil -d sql:/etc/pki/nssdb -A -t "C,," -n "mitm-ca" -i /usr/local/share/ca-certificates/mitm-ca.crt </dev/null \
-        || echo "WARNING: NSS import failed" >&2
+        || { echo "ERROR: failed to import the MITM CA into the Firefox NSS database" >&2; return 1; }
     # Firefox enterprise policy: auto-imports the CA into every profile at launch.
     local policies
     policies=$(jq -n --arg cert /usr/local/share/ca-certificates/mitm-ca.crt \
@@ -86,14 +97,15 @@ write_zcode_settings() { # $1=proxy url ('' = none) $2=no_proxy $3=ca path ('' =
 # --- Proxy relay (optional) ---------------------------------------------------
 # ZCODE_HTTP_PROXY is the single source of truth for the whole container, e.g.
 #   http://user:pass@proxy.example.com:55666
+#   socks5://user:pass@proxy.example.com:1080
 # When set, a local unauthenticated relay (tinyproxy) is started on
 # 127.0.0.1:8118: it forwards everything to the upstream proxy and injects
 # Basic auth when the URL carries user:pass@. Shell env vars, ZCode and
 # Firefox all point at the relay, so nothing inside the container ever sees
 # credentials. Unset or empty = the whole container runs proxy-less.
-# The relay speaks plain HTTP proxy protocol to the upstream (standard for
-# squid-style proxies); an https:// URL prefix is accepted but the connection
-# to the upstream stays plain.
+# The relay speaks HTTP proxy protocol to clients and can use HTTP, SOCKS4, or
+# SOCKS5 for the upstream. An https:// URL prefix means HTTP proxy protocol
+# over a plain connection; TLS to an HTTPS proxy is not implemented.
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy \
       no_proxy NO_PROXY
 
@@ -107,17 +119,38 @@ noproxy_entries() {
 if [ -n "${ZCODE_HTTP_PROXY:-}" ]; then
     PROXY_SCHEME=$(sed -nE 's#^([a-zA-Z][a-zA-Z0-9+.-]*)://.*#\1#p' <<<"$ZCODE_HTTP_PROXY")
     PROXY_SCHEME=${PROXY_SCHEME:-http}
+    PROXY_SCHEME=${PROXY_SCHEME,,}
+    case "$PROXY_SCHEME" in
+        http|https) UPSTREAM_TYPE=http ;;
+        socks4|socks5) UPSTREAM_TYPE="$PROXY_SCHEME" ;;
+        *) echo "ERROR: unsupported proxy scheme '$PROXY_SCHEME' (expected http, https, socks4, or socks5)" >&2; exit 1 ;;
+    esac
     REST=$(sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' <<<"$ZCODE_HTTP_PROXY" | cut -d/ -f1)
     PROXY_USERPASS=$(sed -nE 's#^([^/@]+)@.*#\1#p' <<<"$REST")
     HOSTPORT=$(sed -E 's#^[^/@]+@##' <<<"$REST")
-    PROXY_HOST="${HOSTPORT%%:*}"
-    PROXY_PORT="${HOSTPORT#*:}"
-    [ "$PROXY_PORT" = "$HOSTPORT" ] && PROXY_PORT=""
-    if [ -z "$PROXY_PORT" ]; then
-        case "$PROXY_SCHEME" in https) PROXY_PORT=443 ;; *) PROXY_PORT=80 ;; esac
+    PROXY_HOST_CONFIG=""
+    if [[ "$HOSTPORT" =~ ^\[([^]]+)\](:([0-9]+))?$ ]]; then
+        PROXY_HOST="${BASH_REMATCH[1]}"
+        PROXY_PORT="${BASH_REMATCH[3]}"
+        PROXY_HOST_CONFIG="[${PROXY_HOST}]"
+    else
+        PROXY_HOST="${HOSTPORT%%:*}"
+        PROXY_PORT="${HOSTPORT#*:}"
+        [ "$PROXY_PORT" = "$HOSTPORT" ] && PROXY_PORT=""
     fi
-    if [ -z "$PROXY_HOST" ] || ! [[ "$PROXY_PORT" =~ ^[0-9]+$ ]]; then
+    if [ -z "$PROXY_PORT" ]; then
+        case "$PROXY_SCHEME" in
+            https) PROXY_PORT=443 ;;
+            socks4|socks5) PROXY_PORT=1080 ;;
+            *) PROXY_PORT=80 ;;
+        esac
+    fi
+    if [ -z "$PROXY_HOST" ] || ! [[ "$PROXY_PORT" =~ ^[0-9]+$ ]] || [ "$PROXY_PORT" -lt 1 ] || [ "$PROXY_PORT" -gt 65535 ]; then
         echo "ERROR: cannot parse ZCODE_HTTP_PROXY='$ZCODE_HTTP_PROXY' (expected http(s)://[user:pass@]host:port)" >&2
+        exit 1
+    fi
+    if [ -n "$PROXY_USERPASS" ] && { [[ "$PROXY_USERPASS" != *:* ]] || [[ "$PROXY_USERPASS" == *$'\n'* || "$PROXY_USERPASS" == *$'\r'* || "$PROXY_USERPASS" == *'"'* || "$PROXY_USERPASS" == *' '* ]]; }; then
+        echo "ERROR: proxy credentials contain invalid characters or lack ':'" >&2
         exit 1
     fi
     if [ "$PROXY_SCHEME" = "https" ]; then
@@ -134,7 +167,7 @@ Allow $RELAY_ADDR
 Timeout 600
 MaxClients 128
 # tinyproxy: last matching rule wins, so the catch-all comes first.
-upstream http ${PROXY_USERPASS:+${PROXY_USERPASS}@}${PROXY_HOST}:${PROXY_PORT}
+upstream $UPSTREAM_TYPE ${PROXY_USERPASS:+${PROXY_USERPASS}@}${PROXY_HOST_CONFIG:-${PROXY_HOST}}:${PROXY_PORT}
 upstream none "."
 EOF
     noproxy_entries | while IFS= read -r entry; do
@@ -145,17 +178,27 @@ EOF
             # IP with prefix length: pass through (tinyproxy supports CIDR)
             printf 'upstream none "%s"\n' "$entry"
         else
-            host="${entry%%:*}"     # drop an optional :port
+            if [[ "$entry" =~ ^\[([^]]+)\](:[0-9]+)?$ ]]; then
+                host="${BASH_REMATCH[1]}"
+            elif [[ "$entry" == *:*:* ]]; then
+                # An unbracketed IPv6 literal (for example ::1) has colons
+                # but no unambiguous port separator.
+                host="$entry"
+            else
+                host="${entry%%:*}"     # drop an optional :port
+            fi
             host="${host#.}"        # drop a leading dot
             [ -z "$host" ] && continue
             printf 'upstream none "%s"\n' "$host"
-            printf 'upstream none ".%s"\n' "$host"
+            [[ "$host" == *:* ]] || printf 'upstream none ".%s"\n' "$host"
         fi
     done >> /etc/tinyproxy/tinyproxy.conf
+    chmod 600 /etc/tinyproxy/tinyproxy.conf
 
     # Foreground process as a supervised child of this script: if it dies,
     # the trailing wait -n tears the whole container down.
     tinyproxy -d -c /etc/tinyproxy/tinyproxy.conf &
+    RELAY_PID=$!
 
     # Wait for the relay to accept connections. Deliberately a pure liveness
     # check (TCP connect on the listen port): probing through the relay would
@@ -235,9 +278,26 @@ EOF
 chmod +x ~/.vnc/xstartup
 
 vncserver $VNC_DISPLAY -geometry "$RESOLUTION" -localhost no -xstartup ~/.vnc/xstartup
+VNC_PID_FILE=$(find ~/.vnc -maxdepth 1 -type f -name "*:1.pid" -print -quit)
+if [ -z "$VNC_PID_FILE" ] || ! VNC_PID=$(cat "$VNC_PID_FILE") || ! [[ "$VNC_PID" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: unable to locate the VNC server PID" >&2
+    exit 1
+fi
+
+cleanup() {
+    [ -n "${RELAY_PID:-}" ] && kill "$RELAY_PID" 2>/dev/null || true
+    [ -n "${NOVNC_PID:-}" ] && kill "$NOVNC_PID" 2>/dev/null || true
+    vncserver -kill "$VNC_DISPLAY" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
+
+# Turn a detached Xvnc failure into a container failure visible to wait -n.
+( while kill -0 "$VNC_PID" 2>/dev/null; do sleep 2; done; exit 1 ) &
+VNC_MONITOR_PID=$!
 
 # noVNC: open http://<server-ip>:6080/vnc.html in a browser
 websockify --web=/usr/share/novnc/ "$NOVNC_PORT" localhost:5901 &
+NOVNC_PID=$!
 
 echo "========================================================="
 echo " Desktop is up"

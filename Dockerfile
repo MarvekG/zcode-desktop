@@ -1,15 +1,14 @@
 # ZCode desktop + XFCE for linux/arm64 and linux/amd64 servers
-# Build arm64: docker buildx build --platform linux/arm64 -t zcode-desktop:arm64 --load .
-# Build amd64: docker buildx build --platform linux/amd64 --build-arg ZCODE_ARCH=x64 -t zcode-desktop:amd64 --load .
+# Build either platform with Buildx; the AppImage architecture is selected
+# automatically from TARGETARCH below.
 
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=zh_CN.UTF-8
 
-ARG ZCODE_ARCH=arm64
 ARG ZCODE_VERSION=3.11.2
-ARG ZCODE_URL=https://cdn-zcode.z.ai/zcode/electron/releases/${ZCODE_VERSION}/linux-${ZCODE_ARCH}/ZCode-${ZCODE_VERSION}-linux-${ZCODE_ARCH}.AppImage
+ARG TARGETARCH
 
 # Bootstrap trust BEFORE the main install: the bare base has neither
 # ca-certificates nor /usr/local/share/ca-certificates, so install those first
@@ -78,8 +77,17 @@ RUN install -d -m 0755 /etc/apt/keyrings \
         > /usr/lib/firefox/mozilla.cfg \
     && rm -rf /var/lib/apt/lists/*
 
-# ZCode desktop app (AppImage kept as-is; runs via FUSE mount, no unpacked install)
-ADD ${ZCODE_URL} /opt/ZCode.AppImage
+# ZCode desktop app (AppImage kept as-is; runs via FUSE mount, no unpacked install).
+# The vendor calls amd64 "x64", so derive its download directory from BuildKit's
+# target architecture instead of using one build-arg for both platforms.
+RUN case "$TARGETARCH" in \
+      amd64) ZCODE_ARCH=x64 ;; \
+      arm64) ZCODE_ARCH=arm64 ;; \
+      *) echo "unsupported target architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fL --retry 3 \
+      "https://cdn-zcode.z.ai/zcode/electron/releases/${ZCODE_VERSION}/linux-${ZCODE_ARCH}/ZCode-${ZCODE_VERSION}-linux-${ZCODE_ARCH}.AppImage" \
+      -o /opt/ZCode.AppImage
 COPY zcode-launcher.sh /usr/local/bin/zcode
 RUN chmod 755 /opt/ZCode.AppImage /usr/local/bin/zcode \
     && mkdir -p /usr/local/share/applications /root/Desktop /root/.config/fcitx5 \
