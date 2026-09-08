@@ -44,18 +44,26 @@ install_ca() { # $1 = source cert file (exactly one cert, PEM or DER); sets CA_P
         cat /tmp/ca-install.log >&2 || true
         return 1
     fi
-    # NSS database: what Firefox enterprise roots actually reads on Linux;
-    # /etc/ssl/certs alone is NOT enough for Firefox. Recreate from scratch so
-    # reruns stay idempotent (certutil -N loops forever prompting on an
-    # existing db when stdin is not a terminal).
-    mkdir -p /etc/pki/nssdb
-    rm -f /etc/pki/nssdb/*.db /etc/pki/nssdb/pkcs11.txt
-    if ! certutil -d sql:/etc/pki/nssdb -N --empty-password </dev/null >/dev/null 2>&1; then
-        echo "ERROR: failed to initialize the Firefox NSS database" >&2
-        return 1
-    fi
-    certutil -d sql:/etc/pki/nssdb -A -t "C,," -n "mitm-ca" -i /usr/local/share/ca-certificates/mitm-ca.crt </dev/null \
-        || { echo "ERROR: failed to import the MITM CA into the Firefox NSS database" >&2; return 1; }
+    # NSS databases cover both system services and Chromium/Electron. Firefox
+    # additionally receives an enterprise policy below. Chromium on Linux
+    # normally reads the per-user database at ~/.pki/nssdb, while system NSS
+    # consumers use /etc/pki/nssdb.
+    install_nss_ca() {
+        local db="$1"
+        mkdir -p "$db"
+        if [ ! -f "$db/cert9.db" ] && [ ! -f "$db/cert8.db" ]; then
+            if ! certutil -d "sql:$db" -N --empty-password </dev/null >/dev/null 2>&1; then
+                echo "ERROR: failed to initialize NSS database $db" >&2
+                return 1
+            fi
+        fi
+        certutil -d "sql:$db" -D -n "zcode-mitm-ca" </dev/null >/dev/null 2>&1 || true
+        certutil -d "sql:$db" -A -t "C,," -n "zcode-mitm-ca" \
+            -i /usr/local/share/ca-certificates/mitm-ca.crt </dev/null \
+            || { echo "ERROR: failed to import the MITM CA into NSS database $db" >&2; return 1; }
+    }
+    install_nss_ca /etc/pki/nssdb || return 1
+    install_nss_ca /root/.pki/nssdb || return 1
     # Python writes the Firefox certificate policy with the proxy settings below.
     CA_PATH=/usr/local/share/ca-certificates/mitm-ca.crt
     echo "MITM CA installed into system store + NSS: $src"

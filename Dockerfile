@@ -153,7 +153,13 @@ WORKDIR /root
 ENV HOME=/root \
     NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
     NODE_USE_ENV_PROXY=1 \
-    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    SSL_CERT_DIR=/etc/ssl/certs \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt \
+    PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
+    NPM_CONFIG_CAFILE=/etc/ssl/certs/ca-certificates.crt
 
 COPY startup.sh proxy_config.py /root/
 RUN chmod +x /root/startup.sh

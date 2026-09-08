@@ -93,7 +93,7 @@ docker run -d --name zcode-desktop \
 - **运行期挂载**（推荐，无需重新构建）：`-v /path/to/mitm-ca.pem:/mitm-ca.pem:ro`；
 - **构建期烘焙**：把证书作为单个文件放进构建上下文的 `certs/mitm-ca.pem`，构建时 bind 挂载进构建过程（`RUN --mount=type=bind`，不会拷贝进镜像层），在 `apt-get update` 之前装入系统信任库——配合 `--build-arg HTTPS_PROXY=...`，构建期走 MITM 代理时 apt/wget/curl 全程可信，并烘焙为镜像内 `/mitm-ca.pem`。
 
-PEM 或 DER 自动转换。证书装入：系统信任库（curl/git/Electron/openssl）、NSS 库 + Firefox 企业策略（enterprise roots），并作为 ZCode 的 `httpProxyCaCertPath`，同时通过 `NODE_EXTRA_CA_CERTS` 覆盖 Node 侧 TLS。**文件包含多于一个证书或无法解析时直接启动失败**，避免静默信任错误的 CA；不需要 MITM 时不挂载即可。
+PEM 或 DER 自动转换。证书装入：系统信任库（curl/git/Electron/openssl）、系统和用户 NSS 库（覆盖 Chromium/Electron）、Firefox 企业策略（enterprise roots），并作为 ZCode 的 `httpProxyCaCertPath`，同时通过 `NODE_EXTRA_CA_CERTS` 覆盖 Node 侧 TLS。**文件包含多于一个证书或无法解析时直接启动失败**，避免静默信任错误的 CA；不需要 MITM 时不挂载即可。
 
 ### 获取 MITM 根证书
 
