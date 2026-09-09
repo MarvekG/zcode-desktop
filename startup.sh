@@ -8,6 +8,28 @@ NOVNC_PORT="${NOVNC_PORT:-6080}"
 VNC_DISPLAY=":1"
 RESOLUTION="${RESOLUTION:-1920x1080}"
 
+# --- SSH files ----------------------------------------------------------------
+# Host SSH files are mounted under /tmp so the persistent /root/.ssh volume can
+# be initialized without mounting individual host files over their final paths.
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+if [ -f /tmp/zcode-host-id_ed25519 ]; then
+    cp -- /tmp/zcode-host-id_ed25519 /root/.ssh/id_ed25519
+    chmod 600 /root/.ssh/id_ed25519
+fi
+if [ -f /tmp/zcode-host-id_ed25519_pub ]; then
+    cp -- /tmp/zcode-host-id_ed25519_pub /root/.ssh/id_ed25519.pub
+    chmod 644 /root/.ssh/id_ed25519.pub
+fi
+if [ -f /tmp/zcode-host-authorized_keys ]; then
+    cp -- /tmp/zcode-host-authorized_keys /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+fi
+if [ -f /tmp/zcode-host-known_hosts ]; then
+    cp -- /tmp/zcode-host-known_hosts /root/.ssh/known_hosts
+    chmod 644 /root/.ssh/known_hosts
+fi
+
 # --- MITM CA ------------------------------------------------------------------
 # The MITM root CA is trusted by: the system store (curl/git/Electron/openssl),
 # the NSS database + Firefox enterprise policy, and ZCode (httpProxyCaCertPath).
